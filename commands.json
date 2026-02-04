@@ -1,0 +1,24 @@
+{
+  "commands": [
+    {
+      "name": "/component",
+      "description": "创建新组件",
+      "prompt": "切换到 component-architect agent，使用 component-generator skill。用户需求: {{input}}"
+    },
+    {
+      "name": "/style",
+      "description": "优化组件样式",
+      "prompt": "切换到 styling-expert agent，使用 tailwind-optimizer skill。输入: {{input}}"
+    },
+    {
+      "name": "/feature",
+      "description": "执行完整的新功能开发流程",
+      "prompt": "执行 new-feature workflow。需求: {{input}}"
+    },
+    {
+      "name": "/review",
+      "description": "审查代码",
+      "prompt": "切换到 review-master agent，审查以下代码: {{input}}"
+    }
+  ]
+}
