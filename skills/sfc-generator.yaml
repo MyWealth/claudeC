@@ -1,0 +1,158 @@
+## 🛠️ Skill 定义（Vue 3 专用）
+
+### 1. SFC 生成器
+
+```yaml
+# .claude/skills/sfc-generator.yaml
+name: sfc-generator
+description: 生成 Vue 3 单文件组件 (.vue)
+version: "2.0.0"
+agent: vue-architect
+
+inputs:
+  - name: component_name
+    type: string
+    required: true
+    description: 组件名 (PascalCase)
+    
+  - name: description
+    type: string
+    required: true
+    description: 组件功能描述
+    
+  - name: props
+    type: array
+    required: false
+    description: Props 定义
+    schema:
+      - name: name
+        type: string
+      - name: type
+        type: string  # string | number | boolean | object | array | function | Date | 自定义接口
+      - name: required
+        type: boolean
+        default: false
+      - name: default
+        type: any
+      - name: description
+        type: string
+        
+  - name: emits
+    type: array
+    required: false
+    description: 事件定义
+    schema:
+      - name: name
+        type: string
+      - name: payload
+        type: string  # TypeScript 类型
+      - name: description
+        type: string
+        
+  - name: slots
+    type: array
+    required: false
+    description: 插槽定义
+    schema:
+      - name: name
+        type: string
+        default: default
+      - name: scoped_props
+        type: string  # TypeScript 类型，如 "{ item: T, index: number }"
+      - name: description
+        type: string
+        
+  - name: features
+    type: array
+    required: false
+    description: 组件特性
+    enum: [v_model, loading_state, error_state, empty_state, async_data, pagination, virtualization, drag_drop]
+    
+  - name: styling
+    type: string
+    required: false
+    default: scoped_css
+    enum: [tailwind, scoped_css, css_module, uno_css]
+
+outputs:
+  - name: filename
+    type: string
+    description: 文件名 (如 UserCard.vue)
+    
+  - name: code
+    type: string
+    description: 完整的 .vue 文件代码
+    
+  - name: composables_needed
+    type: array
+    description: 需要使用的组合式函数列表
+
+prompt_template: |
+  请生成一个 Vue 3 + TypeScript 单文件组件。
+  
+  ## 组件信息
+  - 名称: {{component_name}}
+  - 描述: {{description}}
+  - 样式方案: {{styling}}
+  
+  ## Props 定义
+  {{#if props}}
+  {{#each props}}
+  - `{{name}}`: {{type}} {{#if required}}(required){{else}}(optional, default: {{default}}){{/if}} - {{description}}
+  {{/each}}
+  {{else}}
+  请根据描述自行推断需要的 Props
+  {{/if}}
+  
+  ## 事件定义 (Emits)
+  {{#if emits}}
+  {{#each emits}}
+  - `{{name}}`: payload 类型 `{{payload}}` - {{description}}
+  {{/each}}
+  {{else}}
+  根据组件交互设计合适的事件
+  {{/if}}
+  
+  ## 插槽定义 (Slots)
+  {{#if slots}}
+  {{#each slots}}
+  - `{{name}}` {{#if scoped_props}}(scoped: {{scoped_props}}){{/if}} - {{description}}
+  {{/each}}
+  {{else}}
+  设计合理的插槽系统（默认插槽 + 必要具名插槽）
+  {{/if}}
+  
+  ## 特性要求
+  {{#each features}}
+  - [ ] 支持 {{this}}
+  {{/each}}
+  
+  ## 代码规范
+  1. 必须使用 `<script setup lang="ts">`
+  2. Props: 使用 `defineProps<{}>()` 接口 + `withDefaults`
+  3. Emits: 使用 `defineEmits<{}>()` 详细类型
+  {{#if slots}}
+  4. Slots: 使用 `defineSlots<{}>()` (Vue 3.3+)
+  {{/if}}
+  5. 复杂逻辑抽取到 composable
+  6. 模板使用语义化 HTML5 标签，添加 `aria-*` 属性
+  7. {{#if (eq styling "tailwind")}}样式使用 Tailwind CSS 类名{{else}}样式使用 scoped CSS{{/if}}
+  
+  ## 输出格式
+  直接输出完整的 `.vue` 文件内容，格式如下：
+  
+  ```vue
+  <script setup lang="ts">
+  // 类型定义
+  // 导入
+  // Props/Emits/Slots 定义
+  // 逻辑实现
+  </script>
+  
+  <template>
+  <!-- 模板 -->
+  </template>
+  
+  <style {{#if (eq styling "scoped_css")}}scoped{{/if}} {{#if (eq styling "css_module")}}module{{/if}}>
+  /* 样式 */
+  </style>

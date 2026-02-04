@@ -1,0 +1,412 @@
+## 🚀 完整工作流：前端 + 后端对接
+
+```yaml
+# .claude/workflows/fullstack-component.yaml
+name: fullstack-component
+description: 从后端接口到前端组件的完整开发流程
+version: "3.0.0"
+category: fullstack
+
+# ========== 配置 ==========
+config:
+  api:
+    swagger_url: "{{env.VITE_API_BASE_URL}}/v3/api-docs"
+    base_path: "/api/v1"
+  output:
+    types_dir: "src/types/api"
+    api_dir: "src/api"
+    mocks_dir: "src/mocks/handlers"
+    composables_dir: "src/composables/api"
+
+# ========== 触发参数 ==========
+inputs:
+  - name: api_endpoint
+    type: string
+    required: true
+    description: 后端接口路径，如 /users 或完整的 URL
+    
+  - name: http_method
+    type: string
+    required: false
+    default: "GET"
+    enum: [GET, POST, PUT, PATCH, DELETE]
+    
+  - name: component_purpose
+    type: string
+    required: true
+    description: 前端组件用途描述
+
+# ========== 执行步骤 ==========
+steps:
+  # ===== 阶段 1: API 解析与建模 =====
+  
+  - id: parse_api
+    name: parse-api-document
+    description: 🔍 解析后端 API 文档
+    agent: api-integrator
+    skill: api-parser
+    
+    inputs:
+      api_source: "{{config.api.swagger_url}}"
+      endpoint_path: "{{inputs.api_endpoint}}"
+      method: "{{inputs.http_method}}"
+    
+    outputs:
+      endpoint_info: "{{response.endpoint_info}}"
+      request_schema: "{{response.request_schema}}"
+      response_schema: "{{response.response_schema}}"
+    
+    on_error:
+      action: prompt_user
+      message: "无法自动解析 API 文档，请手动提供接口信息"
+      fallback_input:
+        endpoint_info: "{{user_input}}"
+
+  - id: generate_request_types
+    name: generate-request-types
+    description: 📝 生成请求参数类型
+    agent: type-guardian
+    skill: type-generator
+    
+    condition: "{{steps.parse_api.outputs.request_schema != null}}"
+    
+    inputs:
+      schema: "{{steps.parse_api.outputs.request_schema}}"
+      name: "{{pascalCase(steps.parse_api.outputs.endpoint_info.operationId)}}Request"
+      include_zod: true
+    
+    outputs:
+      request_types: "{{response.types_code}}"
+      request_zod: "{{response.zod_schema}}"
+      request_mock: "{{response.mock_factory}}"
+    
+    post_action:
+      type: write_file
+      path: "{{config.output.types_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.request.ts"
+      content: |
+        // 请求类型
+        {{steps.generate_request_types.outputs.request_types}}
+        
+        // Zod Schema
+        {{steps.generate_request_types.outputs.request_zod}}
+        
+        // Mock 工厂
+        {{steps.generate_request_types.outputs.request_mock}}
+
+  - id: generate_response_types
+    name: generate-response-types
+    description: 📝 生成响应数据类型
+    agent: type-guardian
+    skill: type-generator
+    
+    inputs:
+      schema: "{{steps.parse_api.outputs.response_schema}}"
+      name: "{{pascalCase(steps.parse_api.outputs.endpoint_info.operationId)}}Response"
+      include_zod: true
+    
+    outputs:
+      response_types: "{{response.types_code}}"
+      response_zod: "{{response.zod_schema}}"
+      response_mock: "{{response.mock_factory}}"
+    
+    post_action:
+      type: write_file
+      path: "{{config.output.types_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.response.ts"
+      content: |
+        {{steps.generate_response_types.outputs.response_types}}
+        
+        {{steps.generate_response_types.outputs.response_zod}}
+        
+        {{steps.generate_response_types.outputs.response_mock}}
+
+  # ===== 阶段 2: API 客户端封装 =====
+  
+  - id: generate_api_client
+    name: generate-api-client
+    description: 🔌 生成类型安全的 API 客户端
+    agent: api-integrator
+    
+    prompt: |
+      基于以下信息生成 API 客户端函数：
+      
+      ## 端点
+      {{to_json(steps.parse_api.outputs.endpoint_info)}}
+      
+      ## 请求类型
+      ```typescript
+      {{steps.generate_request_types.outputs.request_types}}
+      ```
+      
+      ## 响应类型
+      ```typescript
+      {{steps.generate_response_types.outputs.response_types}}
+      ```
+      
+      ## 要求
+      1. 使用项目封装的 httpClient（基于 ofetch/axios）
+      2. 函数名：`{{camelCase(steps.parse_api.outputs.endpoint_info.operationId)}}`
+      3. 完整的 JSDoc 注释
+      4. 自动注入 Authorization header
+      5. 响应拦截：自动解析 code/data/message 结构
+      6. 错误处理：统一转换为 ApiError
+      
+      ## 输出
+      输出完整的 TypeScript 代码
+      
+    outputs:
+      api_function_code: "{{extract_code_block(response, 'typescript')}}"
+      api_function_name: "{{steps.parse_api.outputs.endpoint_info.operationId}}"
+    
+    post_action:
+      type: write_file
+      path: "{{config.output.api_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.tags[0])}}.ts"
+      mode: append
+      content: "{{steps.generate_api_client.outputs.api_function_code}}"
+
+  # ===== 阶段 3: Mock 数据 =====
+  
+  - id: generate_msw
+    name: generate-msw-handler
+    description: 🎭 生成 MSW Mock 处理器
+    agent: api-integrator
+    skill: mock-generator
+    
+    inputs:
+      endpoint_info: "{{steps.parse_api.outputs.endpoint_info}}"
+      types_code: |
+        {{steps.generate_response_types.outputs.response_types}}
+        {{steps.generate_response_types.outputs.response_mock}}
+    
+    outputs:
+      msw_handler_code: "{{response.msw_handler}}"
+      mock_scenarios: "{{response.mock_data}}"
+    
+    post_action:
+      type: write_file
+      path: "{{config.output.mocks_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.ts"
+      content: "{{steps.generate_msw.outputs.msw_handler_code}}"
+
+  # ===== 阶段 4: Vue Composable =====
+  
+  - id: generate_composable
+    name: generate-api-composable
+    description: 🧩 生成 useXxx 组合式函数
+    agent: api-integrator
+    skill: composable-generator
+    
+    inputs:
+      name: "use{{pascalCase(steps.parse_api.outputs.endpoint_info.operationId)}}"
+      purpose: "对接后端接口：{{steps.parse_api.outputs.endpoint_info.summary}}"
+      source_type: "external_api"
+      api_function: "{{steps.generate_api_client.outputs.api_function_name}}"
+      has_params: "{{steps.parse_api.outputs.endpoint_info.parameters | length > 0}}"
+      is_list: "{{steps.parse_api.outputs.endpoint_info.operationId includes 'List'}}"
+    
+    prompt: |
+      生成 Vue 3 组合式函数，封装 API 调用：
+      
+      ## API 函数
+      ```typescript
+      import { {{steps.generate_api_client.outputs.api_function_name}} } from '{{config.output.api_dir}}';
+      
+      {{steps.generate_api_client.outputs.api_function_code}}
+      ```
+      
+      ## 要求
+      1. 使用 Vue Query (TanStack Query Vue) 或原生实现
+      2. 支持参数响应式（computed/ref 作为输入）
+      3. 自动重试策略（失败 3 次）
+      4. 支持手动刷新
+      5. 缓存策略配置
+      
+      ## 返回结构
+      ```typescript
+      {
+        data,           // 响应数据
+        isLoading,      // 首次加载
+        isFetching,     // 后台刷新
+        isError,
+        error,          // ApiError
+        refetch,        // 手动刷新
+        invalidate,     // 失效缓存
+      }
+      ```
+      
+    outputs:
+      composable_code: "{{extract_code_block(response, 'typescript')}}"
+      composable_name: "use{{pascalCase(steps.parse_api.outputs.endpoint_info.operationId)}}"
+    
+    post_action:
+      type: write_file
+      path: "{{config.output.composables_dir}}/use-{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.ts"
+      content: "{{steps.generate_composable.outputs.composable_code}}"
+
+  # ===== 阶段 5: 前端组件 =====
+  
+  - id: analyze_component
+    name: analyze-component-needs
+    description: 🎯 分析组件需求
+    agent: vue-architect
+    
+    prompt: |
+      基于以下 API 信息，分析前端组件需求：
+      
+      ## 接口用途
+      {{inputs.component_purpose}}
+      
+      ## API 端点
+      {{steps.parse_api.outputs.endpoint_info.summary}}
+      
+      ## 响应数据结构
+      {{to_json(steps.parse_api.outputs.response_schema)}}
+      
+      ## 任务
+      1. 确定组件类型（List/Detail/Form/Card）
+      2. 识别需要的 Props（如筛选条件）
+      3. 确定状态管理（是否需要 Pinia）
+      4. 确定 UI 状态（loading/skeleton/error/empty）
+      
+      输出 JSON：
+      {
+        "component_type": "list",
+        "component_name": "UserList",
+        "props": [...],
+        "features": ["loading", "pagination", "refresh"],
+        "slots": ["item", "empty"]
+      }
+      
+    outputs:
+      component_design: "{{parse_json(response)}}"
+
+  - id: generate_component
+    name: generate-vue-component
+    description: 🎨 生成对接 API 的 Vue 组件
+    agent: vue-architect
+    skill: sfc-generator
+    
+    inputs:
+      component_name: "{{steps.analyze_component.outputs.component_design.component_name}}"
+      description: "{{inputs.component_purpose}}"
+      composable: "{{steps.generate_composable.outputs.composable_name}}"
+      props: "{{steps.analyze_component.outputs.component_design.props}}"
+      features: "{{steps.analyze_component.outputs.component_design.features}}"
+      slots: "{{steps.analyze_component.outputs.component_design.slots}}"
+      styling: "tailwind"
+    
+    prompt: |
+      生成使用以下 composable 的 Vue 组件：
+      
+      ## Composable
+      ```typescript
+      {{steps.generate_composable.outputs.composable_code}}
+      ```
+      
+      ## 使用方式
+      ```typescript
+      const { data, isLoading, isError, error, refetch } = {{steps.generate_composable.outputs.composable_name}}(params);
+      ```
+      
+      ## 组件要求
+      1. Props 与 Composable 参数绑定
+      2. 自动处理 loading/error/empty 状态
+      3. 支持手动刷新（刷新按钮）
+      4. 响应式参数变化自动重新获取数据
+      5. 添加错误重试 UI
+      
+      输出完整的 .vue 文件
+      
+    outputs:
+      component_code: "{{response.code}}"
+      component_filename: "{{response.filename}}"
+    
+    post_action:
+      type: write_file
+      path: "src/components/{{steps.generate_component.outputs.component_filename}}"
+      content: "{{steps.generate_component.outputs.component_code}}"
+
+  # ===== 阶段 6: 错误处理与边界 =====
+  
+  - id: error_boundary
+    name: setup-error-handling
+    description: 🛡️ 配置错误处理
+    agent: api-integrator
+    
+    prompt: |
+      为以下 API 设计错误处理策略：
+      
+      ## 错误码
+      {{steps.parse_api.outputs.endpoint_info.responses}}
+      
+      ## 要求
+      1. 错误码映射到用户友好提示
+      2. 全局错误拦截（401 跳转登录，403 无权限）
+      3. 组件级错误兜底（Error Boundary）
+      4. 重试策略（网络错误自动重试）
+      
+      输出：
+      - error-handler.ts 配置
+      - 组件内的错误展示 UI 代码
+      
+    outputs:
+      error_config: "{{response.config}}"
+      error_ui_component: "{{response.error_component}}"
+
+  # ===== 阶段 7: 测试生成 =====
+  
+  - id: generate_tests
+    name: generate-api-tests
+    description: 🧪 生成 API 测试
+    agent: testing-guru
+    
+    prompt: |
+      生成 API 相关测试：
+      
+      ## 测试范围
+      1. API 客户端单元测试（msw 拦截）
+      2. Composable 测试（Vue Test Utils）
+      3. 组件集成测试
+      
+      ## API 信息
+      {{to_json(steps.parse_api.outputs.endpoint_info)}}
+      
+      ## Composable
+      {{steps.generate_composable.outputs.composable_code}}
+      
+      输出测试文件代码
+      
+    outputs:
+      api_test: "{{response.api_test}}"
+      composable_test: "{{response.composable_test}}"
+      component_test: "{{response.component_test}}"
+
+# ========== 工作流输出 ==========
+outputs:
+  summary: |
+    ✅ 后端接口对接完成！
+    
+    📡 API 端点: {{inputs.http_method}} {{inputs.api_endpoint}}
+    
+    📁 生成文件:
+    ├─ 类型定义: {{config.output.types_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.*
+    ├─ API 客户端: {{config.output.api_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.tags[0])}}.ts
+    ├─ Mock 数据: {{config.output.mocks_dir}}/{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.ts
+    ├─ Composable: {{config.output.composables_dir}}/use-{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.ts
+    └─ 组件: src/components/{{steps.generate_component.outputs.component_filename}}
+    
+    🎭 Mock 已启用，开发环境将自动拦截请求
+    
+    📝 下一步:
+    1. 在组件中导入并使用
+    2. 根据实际需求调整 Props
+    3. 添加业务逻辑（筛选、排序等）
+    
+  next_steps:
+    - "运行测试: npm test {{steps.generate_composable.outputs.composable_name}}"
+    - "启动开发服务器: npm run dev"
+    - "查看 Mock 数据: 访问 {{inputs.api_endpoint}}"
+
+post_workflow:
+  - type: open_files
+    files:
+      - "{{config.output.composables_dir}}/use-{{kebabCase(steps.parse_api.outputs.endpoint_info.operationId)}}.ts"
+      - "src/components/{{steps.generate_component.outputs.component_filename}}"

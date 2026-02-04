@@ -1,0 +1,367 @@
+# .claude/workflows/new-component.yaml
+name: new-component
+description: 从零开发 Vue 3 组件（含类型、测试、Storybook）
+version: "2.0.0"
+author: "vue-team"
+
+# 触发器配置（可选，用于自动化）
+trigger:
+  type: manual  # manual | file_change | git_hook
+  prompt_template: |
+    创建新组件：{{user_input}}
+    请提供：
+    - 组件名称
+    - 功能描述
+    - 关键 Props
+
+# 上下文定义（步骤间数据传递）
+context:
+  project_path: "{{env.PROJECT_ROOT}}"
+  tech_stack: "{{file('../context/tech-stack.json')}}"
+  conventions: "{{file('../context/vue-conventions.md')}}"
+
+# 执行步骤
+steps:
+  # ========== 步骤 1: 需求分析 ==========
+  - id: analyze
+    name: requirement-analysis
+    description: 分析用户需求，提取关键信息
+    agent: vue-architect
+    # 不使用 skill，纯对话分析
+    prompt: |
+      ## 任务
+      分析用户的组件需求，提取结构化信息。
+      
+      ## 用户输入
+      {{trigger.user_input}}
+      
+      ## 项目规范（参考）
+      {{context.conventions}}
+      
+      ## 输出要求（JSON 格式）
+      ```json
+      {
+        "component_name": "组件名（PascalCase）",
+        "description": "详细功能描述",
+        "category": "组件分类：display | form | feedback | navigation | data",
+        "complexity": "复杂度：simple | medium | complex",
+        "props": [
+          {
+            "name": "prop名",
+            "type": "TypeScript类型",
+            "required": true/false,
+            "default": "默认值",
+            "description": "说明"
+          }
+        ],
+        "emits": ["事件名列表"],
+        "slots": ["插槽名列表"],
+        "features": ["需要支持的特性：loading | error | empty | async | v-model"],
+        "dependencies": ["依赖的组件或composable"],
+        "estimated_files": 3
+      }
+      ```
+      
+      只输出 JSON，不要有其他说明。
+    
+    outputs:
+      analysis: "{{parse_json(response)}}"  # 存储解析后的 JSON
+      component_name: "{{parse_json(response).component_name}}"
+    
+    validation:
+      - field: "analysis.component_name"
+        rule: "matches_regex('^[A-Z][a-zA-Z0-9]+$')"
+        error_msg: "组件名必须是 PascalCase"
+      - field: "analysis.complexity"
+        rule: "in_list(['simple', 'medium', 'complex'])"
+    
+    on_error: retry  # retry | skip | abort
+
+  # ========== 步骤 2: 生成组件代码 ==========
+  - id: generate
+    name: generate-sfc
+    description: 生成单文件组件
+    agent: vue-architect
+    skill: sfc-generator  # 使用 Skill
+    
+    # 条件：仅当分析成功时执行
+    condition: "{{steps.analyze.status == 'success'}}"
+    
+    inputs:
+      component_name: "{{steps.analyze.outputs.component_name}}"
+      description: "{{steps.analyze.outputs.analysis.description}}"
+      props: "{{steps.analyze.outputs.analysis.props}}"
+      emits: "{{steps.analyze.outputs.analysis.emits}}"
+      slots: "{{steps.analyze.outputs.analysis.slots}}"
+      features: "{{steps.analyze.outputs.analysis.features}}"
+      styling: "tailwind"  # 从配置读取或硬编码
+    
+    outputs:
+      sfc_code: "{{response.code}}"
+      sfc_filename: "{{response.filename}}"
+      composables_needed: "{{response.composables_needed}}"
+    
+    # 文件操作：自动写入
+    post_action:
+      type: write_file
+      path: "{{context.project_path}}/src/components/{{steps.generate.outputs.sfc_filename}}"
+      content: "{{steps.generate.outputs.sfc_code}}"
+      confirm: true  # 写入前询问确认
+
+  # ========== 步骤 3: 生成组合式函数（条件执行）==========
+  - id: composables
+    name: generate-composables
+    description: 生成所需的组合式函数
+    agent: composable-expert
+    skill: composable-generator
+    
+    # 仅当需要 composables 时执行
+    condition: "{{steps.generate.outputs.composables_needed | length > 0}}"
+    
+    # 循环：为每个需要的 composable 生成
+    loop: "{{steps.generate.outputs.composables_needed}}"
+    loop_var: composable_name
+    
+    inputs:
+      name: "{{composable_name}}"
+      purpose: "支持 {{steps.analyze.outputs.component_name}} 组件"
+      source_type: "external_api"
+      return_structure: "standard"
+    
+    outputs:
+      composable_code: "{{response.code}}"
+      composable_filename: "{{response.filename}}"
+    
+    post_action:
+      type: write_file
+      path: "{{context.project_path}}/src/composables/{{steps.composables.outputs.composable_filename}}"
+      content: "{{steps.composables.outputs.composable_code}}"
+
+  # ========== 步骤 4: Props 类型优化 ==========
+  - id: types
+    name: optimize-types
+    description: 提取和优化 TypeScript 类型
+    agent: type-guardian
+    
+    prompt: |
+      优化以下 Vue 组件的类型定义：
+      
+      ## 当前代码
+      ```vue
+      {{steps.generate.outputs.sfc_code}}
+      ```
+      
+      ## 任务
+      1. 将 Props 接口提取到独立的 types/{{component_name}}.types.ts
+      2. 确保所有复杂类型都有明确接口
+      3. 添加类型守卫函数（如 isUser）
+      4. 优化泛型使用
+      
+      输出：
+      - types.ts 文件内容
+      - 更新后的组件代码（import 类型）
+    
+    outputs:
+      types_code: "{{extract_code_block(response, 'typescript')}}"
+      updated_sfc: "{{extract_code_block(response, 'vue')}}"
+    
+    post_action:
+      - type: write_file
+        path: "{{context.project_path}}/src/components/types/{{steps.analyze.outputs.component_name}}.types.ts"
+        content: "{{steps.types.outputs.types_code}}"
+      - type: update_file
+        path: "{{context.project_path}}/src/components/{{steps.generate.outputs.sfc_filename}}"
+        content: "{{steps.types.outputs.updated_sfc}}"
+
+  # ========== 步骤 5: 样式优化 ==========
+  - id: styling
+    name: optimize-styles
+    description: 优化 Tailwind 类名
+    agent: styling-expert
+    skill: tailwind-optimizer
+    
+    inputs:
+      description: "{{steps.analyze.outputs.analysis.description}}"
+      existing_classes: "{{extract_classnames(steps.generate.outputs.sfc_code)}}"
+      context: "{{steps.analyze.outputs.analysis.category}}"
+    
+    outputs:
+      optimized_classes: "{{response.optimized_classes}}"
+      style_explanation: "{{response.explanation}}"
+    
+    # 内联更新：修改 SFC 中的 class
+    post_action:
+      type: modify_file
+      path: "{{context.project_path}}/src/components/{{steps.generate.outputs.sfc_filename}}"
+      operations:
+        - type: replace
+          pattern: 'class="([^"]*)"'
+          replacement: 'class="{{steps.styling.outputs.optimized_classes}}"'
+
+  # ========== 步骤 6: 生成单元测试 ==========
+  - id: testing
+    name: generate-tests
+    description: 生成 Vitest 测试文件
+    agent: testing-guru
+    
+    prompt: |
+      为以下 Vue 3 组件生成单元测试：
+      
+      ## 组件代码
+      ```vue
+      {{steps.generate.outputs.sfc_code}}
+      ```
+      
+      ## Props 类型
+      {{steps.types.outputs.types_code}}
+      
+      ## 要求
+      1. 使用 Vitest + Vue Test Utils
+      2. 测试所有 Props 的渲染
+      3. 测试所有 Emits 事件触发
+      4. 测试 Slots 内容渲染
+      5. 测试 loading/error 状态
+      6. 使用 @testing-library/vue 风格查询
+      7. 覆盖率 > 80%
+      
+      输出完整的 {{component_name}}.spec.ts 文件
+      
+    outputs:
+      test_code: "{{extract_code_block(response, 'typescript')}}"
+      test_cases: "{{response.test_cases_count}}"
+    
+    post_action:
+      type: write_file
+      path: "{{context.project_path}}/src/components/__tests__/{{steps.analyze.outputs.component_name}}.spec.ts"
+      content: "{{steps.testing.outputs.test_code}}"
+
+  # ========== 步骤 7: 生成 Storybook 故事 ==========
+  - id: storybook
+    name: generate-stories
+    description: 生成 Storybook 故事
+    agent: vue-architect
+    skill: storybook-creator
+    
+    condition: "{{file_exists('src/stories')}}"
+    
+    inputs:
+      component_code: "{{steps.types.outputs.updated_sfc}}"
+      component_name: "{{steps.analyze.outputs.component_name}}"
+      props_definition: "{{steps.analyze.outputs.analysis.props}}"
+      variants: ["default", "loading", "empty", "error"]
+    
+    outputs:
+      story_code: "{{response.code}}"
+    
+    post_action:
+      type: write_file
+      path: "{{context.project_path}}/src/stories/{{steps.analyze.outputs.component_name}}.stories.ts"
+      content: "{{steps.storybook.outputs.story_code}}"
+
+  # ========== 步骤 8: 创建索引导出 ==========
+  - id: index
+    name: update-index
+    description: 更新组件库索引
+    agent: vue-architect
+    
+    prompt: |
+      更新 src/components/index.ts，添加新组件导出：
+      
+      新组件: {{steps.analyze.outputs.component_name}}
+      文件路径: ./{{steps.generate.outputs.sfc_filename}}
+      
+      保持现有导出顺序（按字母顺序），添加新导出。
+    
+    post_action:
+      type: update_file
+      path: "{{context.project_path}}/src/components/index.ts"
+      mode: append  # append | replace | smart_merge
+
+  # ========== 步骤 9: 最终审查 ==========
+  - id: review
+    name: final-review
+    description: 代码审查和优化建议
+    agent: review-master
+    
+    prompt: |
+      审查以下生成的代码质量：
+      
+      ## 组件
+      {{read_file(context.project_path + '/src/components/' + steps.generate.outputs.sfc_filename)}}
+      
+      ## 测试
+      {{read_file(context.project_path + '/src/components/__tests__/' + steps.analyze.outputs.component_name + '.spec.ts')}}
+      
+      ## 检查清单
+      - [ ] TypeScript 严格类型
+      - [ ] 可访问性 (a11y)
+      - [ ] 性能优化（memo, lazy）
+      - [ ] 代码风格一致性
+      - [ ] 错误边界处理
+      
+      输出：
+      1. 通过/不通过
+      2. 发现的问题
+      3. 修复建议（可直接应用的代码）
+    
+    outputs:
+      review_passed: "{{response.passed}}"
+      issues: "{{response.issues}}"
+      fixes: "{{response.fixes}}"
+    
+    # 条件执行：有问题时自动修复
+    on_error:
+      action: conditional_step
+      next_step: auto_fix
+
+  # ========== 步骤 10: 生成文档（可选）==========
+  - id: docs
+    name: generate-docs
+    description: 生成组件使用文档
+    agent: vue-architect
+    condition: "{{steps.analyze.outputs.analysis.complexity != 'simple'}}"
+    
+    prompt: |
+      为 {{steps.analyze.outputs.component_name}} 生成 Markdown 文档：
+      
+      包含：
+      - 功能说明
+      - Props 表格
+      - Events 表格
+      - Slots 表格
+      - 使用示例（3个不同场景）
+      - 注意事项
+    
+    outputs:
+      docs_content: "{{response}}"
+    
+    post_action:
+      type: write_file
+      path: "{{context.project_path}}/docs/components/{{steps.analyze.outputs.component_name}}.md"
+      content: "{{steps.docs.outputs.docs_content}}"
+
+# 工作流输出（汇总）
+outputs:
+  files_created:
+    - "{{steps.generate.outputs.sfc_filename}}"
+    - "{{steps.types.outputs.types_filename}}"
+    - "{{steps.testing.outputs.test_filename}}"
+    - "{{steps.storybook.outputs.story_filename}}"
+  
+  summary: |
+    ✅ 成功创建组件 {{steps.analyze.outputs.component_name}}
+    📁 文件数: {{steps | length}}
+    🧪 测试用例: {{steps.testing.outputs.test_cases}} 个
+    {{#if steps.review.outputs.review_passed}}
+    ✨ 代码审查通过
+    {{else}}
+    ⚠️ 发现 {{steps.review.outputs.issues | length}} 个问题，请查看修复建议
+    {{/if}}
+
+# 后置钩子：通知、统计等
+post_workflow:
+  - type: log
+    message: "组件 {{component_name}} 创建完成"
+  - type: update_stats
+    metric: "components_created"
+    value: 1
