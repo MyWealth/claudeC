@@ -1,0 +1,959 @@
+name: "generate-vue-component"
+description: |
+  根据用户提示词自动生成 Vue 组件代码。
+
+  功能特点：
+  - 弹窗组件使用 ZModal
+  - 表格组件可选择 ZTable（推荐）或 NDataTable（NaiveUI 原生）
+  - 其他元素优先使用 NaiveUI 组件库
+  - 自动解析字段类型和配置
+  - 支持 TypeScript 和 Vue 3 Setup 语法
+
+inputs:
+  - name: user_prompt
+    description: "用户提示词，描述需要生成的组件"
+    required: true
+    example: "创建一个用户信息弹窗，包含姓名、年龄、性别、手机号字段"
+
+  - name: table_type
+    description: "表格类型（当提示词包含表格时需要选择）"
+    type: enum
+    required: false
+    default: "ZTable"
+    options:
+      - value: "ZTable"
+        label: "ZTable (推荐)"
+        description: "项目封装的表格组件，支持分页、搜索、排序、全选等功能"
+      - value: "NDataTable"
+        label: "NDataTable (NaiveUI)"
+        description: "NaiveUI 原生表格组件，更灵活但需要更多配置"
+
+  - name: output_dir
+    description: "组件输出目录"
+    required: false
+    default: "./src/components/generated"
+
+  - name: use_typescript
+    description: "使用 TypeScript"
+    type: boolean
+    default: true
+
+  - name: use_setup
+    description: "使用 Vue 3 Setup 语法"
+    type: boolean
+    default: true
+
+steps:
+  # ========== 步骤 1: 提示词解析 ==========
+  - id: parse_prompt
+    name: "解析用户提示词"
+    description: |
+      分析用户输入的提示词，识别组件类型、字段列表、按钮配置等信息
+
+      关键词映射规则：
+      - 弹窗、对话框、modal、dialog、popup → 使用 ZModal
+      - 表格、table、列表、list → 需要选择 ZTable 或 NDataTable
+      - 输入框、输入、文本框、input → NInput
+      - 选择器、下拉、select → NSelect
+      - 日期选择、date → NDatePicker
+      - 复选框、checkbox → NCheckbox
+      - 单选框、radio → NRadioGroup
+      - 开关、switch → NSwitch
+    prompt: |
+      ## 任务
+      解析用户提示词，提取组件的结构化信息。
+
+      ## 用户输入
+      {{inputs.user_prompt}}
+
+      ## 解析规则
+
+      ### 1. 组件类型识别
+      根据关键词确定主组件类型：
+      - 包含"弹窗"、"对话框"、"modal"、"dialog"、"popup" → type: "modal"，使用 ZModal
+      - 包含"表格"、"table"、"列表"、"list" → type: "table"，需要选择表格类型
+      - 包含"表单"、"form" → type: "form"，使用 NForm
+      - 其他 → 根据主要内容推断
+
+      ### 2. 字段类型推断
+      根据字段名称自动推断组件类型：
+      | 字段名关键词 | 组件类型 |
+      |------------|---------|
+      | 姓名、名称、标题、用户名、账号、密码、手机、电话、邮箱 | input (NInput) |
+      | 年龄、数量、金额、价格、分数、排序 | inputNumber (NInputNumber) |
+      | 地址、描述、备注、简介 | textarea (NInput type=textarea) |
+      | 性别 | radio (NRadioGroup) |
+      | 类型、状态、级别、部门、职位 | select (NSelect) |
+      | 生日、日期、时间、创建时间、更新时间 | datePicker (NDatePicker) |
+
+      ### 3. 按钮识别
+      从提示词中提取按钮关键词：
+      - 保存、确定、确认、提交、取消、关闭、删除、编辑、修改、新增、添加、查询、搜索、重置、导出、导入
+
+      ## 输出要求（JSON 格式）
+      ```json
+      {
+        "componentType": "modal | table | form | other",
+        "componentName": "组件名（PascalCase，如 UserInfoModal）",
+        "title": "组件标题",
+        "description": "功能描述",
+        "needsTableTypeSelection": false,
+        "fields": [
+          {
+            "key": "字段key（驼峰命名）",
+            "label": "字段标签",
+            "type": "input | inputNumber | textarea | select | radio | checkbox | switch | datePicker",
+            "required": false,
+            "placeholder": "占位符文本",
+            "defaultValue": null,
+            "props": {}
+          }
+        ],
+        "buttons": [
+          {
+            "text": "按钮文本",
+            "type": "primary | default | tertiary | info | success | warning | error",
+            "onClick": "处理函数名"
+          }
+        ],
+        "config": {
+          "size": "mini | small | medium | large",
+          "pagination": true,
+          "sortable": false,
+          "selectable": false
+        },
+        "tableType": "ZTable | NDataTable"
+      }
+      ```
+
+      只输出 JSON，不要有其他说明。
+    outputs:
+      parse_result: "{{parse_json(response)}}"
+
+  # ========== 步骤 2: 表格类型选择（如需要）==========
+  - id: select_table_type
+    name: "选择表格类型"
+    description: 当组件类型为表格时，让用户选择使用哪种表格组件
+    condition: "{{steps.parse_prompt.output.parse_result.needsTableTypeSelection}}"
+    prompt: |
+      检测到需要生成表格组件，请选择表格类型：
+
+      用户选择的表格类型：{{inputs.table_type}}
+
+      ## 表格选项说明
+
+      ### ZTable（推荐）
+      - 项目封装的表格组件
+      - 支持分页、搜索、排序
+      - 支持全选（当前页/全部）
+      - 集成表单筛选功能
+      - 内置加载状态管理
+
+      ### NDataTable（NaiveUI 原生）
+      - NaiveUI 原生表格组件
+      - 更灵活的自定义能力
+      - 需要手动配置更多功能
+
+      请使用用户选择的类型：{{inputs.table_type}}
+    outputs:
+      table_type: "{{inputs.table_type}}"
+
+  # ========== 步骤 3: 确定导入依赖 ==========
+  - id: determine_imports
+    name: "确定导入依赖"
+    description: 根据解析结果确定需要导入的组件和类型
+    prompt: |
+      根据解析结果确定需要导入的组件。
+
+      ## 解析结果
+      {{steps.parse_prompt.output.parse_result}}
+
+      {% if steps.select_table_type %}
+      ## 表格类型
+      {{steps.select_table_type.output.table_type}}
+      {% endif %}
+
+      ## 导入规则
+
+      ### 弹窗组件 (modal)
+      ```typescript
+      import ZModal from '@/components/z/modal'
+      ```
+
+      ### 表格组件 (table)
+      ZTable:
+      ```typescript
+      import ZTable from '@/components/z/table'
+      ```
+
+      NDataTable:
+      ```typescript
+      import { NDataTable } from 'naive-ui'
+      ```
+
+      ### NaiveUI 组件
+      ```typescript
+      import { NForm, NFormItem, NSpace, NButton } from 'naive-ui'
+      import { NInput, NInputNumber, NSelect, NDatePicker } from 'naive-ui'
+      import { NCheckbox, NRadioGroup, NRadio, NSwitch } from 'naive-ui'
+      import { NPopconfirm, NPagination } from 'naive-ui'
+      ```
+
+      ## 输出要求（JSON 格式）
+      ```json
+      {
+        "imports": [
+          "import ZModal from '@/components/z/modal'",
+          "import { NForm, NFormItem } from 'naive-ui'"
+        ],
+        "componentImports": ["ZModal", "NForm", "NFormItem"],
+        "typeImports": ["import type { Ref } from 'vue'"]
+      }
+      ```
+
+      只输出 JSON，不要有其他说明。
+    outputs:
+      imports: "{{parse_json(response)}}"
+
+  # ========== 步骤 4: 生成组件代码 ==========
+  - id: generate_code
+    name: "生成组件代码"
+    description: |
+      根据解析结果和模板生成完整的 Vue 组件代码
+
+      代码规范：
+      - 使用 Vue 3 Setup 语法糖
+      - 使用 TypeScript 定义类型
+      - Props 使用 interface 定义
+      - Emits 使用类型定义
+      - 使用 defineExpose 暴露公共方法
+    prompt: |
+      ## 任务
+      生成完整的 Vue 组件代码。
+
+      ## 组件配置
+      {{steps.parse_prompt.output.parse_result}}
+
+      {% if steps.select_table_type %}
+      ## 表格类型
+      {{steps.select_table_type.output.table_type}}
+      {% endif %}
+
+      ## 导入依赖
+      {{steps.determine_imports.output.imports}}
+
+      ## 代码生成规则
+
+      ### 弹窗组件 (使用 ZModal)
+      ```vue
+      <script setup lang="ts">
+      import { ref } from 'vue'
+      import ZModal from '@/components/z/modal'
+      import { NForm, NFormItem, NSpace, NButton } from 'naive-ui'
+      // ... 其他 NaiveUI 组件
+
+      // Emits
+      const emit = defineEmits<{
+        (e: 'ok', data: Record<string, any>): void
+        (e: 'cancel'): void
+        (e: 'close'): void
+      }>()
+
+      // Props
+      interface Props {
+        title?: string
+        size?: 'mini' | 'small' | 'medium' | 'large'
+        okText?: string
+        cancelText?: string
+        okLoading?: boolean
+      }
+      const props = withDefaults(defineProps<Props>(), {
+        title: '{{steps.parse_prompt.output.parse_result.title}}',
+        size: 'medium',
+        okText: '确定',
+        cancelText: '取消',
+        okLoading: false,
+      })
+
+      // 表单数据
+      interface FormData {
+        {% for field in steps.parse_prompt.output.parse_result.fields %}
+        {{field.key}}?: {{field | field_to_ts_type}}
+        {% endfor %}
+      }
+
+      const formData = ref<FormData>({
+        {% for field in steps.parse_prompt.output.parse_result.fields %}
+        {{field.key}}: {{field.defaultValue | default('undefined')}},
+        {% endfor %}
+      })
+
+      const modalRef = ref()
+
+      function show() {
+        modalRef.value?.show()
+      }
+
+      function close() {
+        modalRef.value?.close()
+      }
+
+      function handleOk() {
+        emit('ok', formData.value)
+      }
+
+      function handleCancel() {
+        emit('cancel')
+        close()
+      }
+
+      function resetForm() {
+        formData.value = {
+          {% for field in steps.parse_prompt.output.parse_result.fields %}
+          {{field.key}}: {{field.defaultValue | default('undefined')}},
+          {% endfor %}
+        }
+      }
+
+      function setFormData(data: Partial<FormData>) {
+        Object.assign(formData.value, data)
+      }
+
+      defineExpose({
+        show,
+        close,
+        resetForm,
+        setFormData,
+      })
+      </script>
+
+      <template>
+        <ZModal
+          ref="modalRef"
+          :title="props.title"
+          :size="props.size"
+          :ok-text="props.okText"
+          :cancel-text="props.cancelText"
+          :ok-loading="props.okLoading"
+          @ok="handleOk"
+          @cancel="handleCancel"
+        >
+          <NForm label-placement="left" label-width="auto">
+            {% for field in steps.parse_prompt.output.parse_result.fields %}
+            <NFormItem label="{{field.label}}"{{field.required | if(' required', '')}}>
+              <{{field | field_to_component}}
+                v-model:value="formData.{{field.key}}"
+                {{field.placeholder | if('placeholder="' + field.placeholder + '"', '')}}
+                {% if field.props %}
+                {{field.props | props_to_attrs}}
+                {% endif %}
+              />
+            </NFormItem>
+            {% endfor %}
+          </NForm>
+
+          {% if steps.parse_prompt.output.parse_result.buttons | length > 0 %}
+          <template #footer>
+            <NSpace :size="[20, 20]">
+              {% for btn in steps.parse_prompt.output.parse_result.buttons %}
+              <NButton{{btn.type | if(' type="' + btn.type + '"', '')}}>
+                {{btn.text}}
+              </NButton>
+              {% endfor %}
+            </NSpace>
+          </template>
+          {% endif %}
+        </ZModal>
+      </template>
+
+      <style lang="scss" scoped>
+      </style>
+      ```
+
+      ### 表格组件 (使用 ZTable)
+      ```vue
+      <script setup lang="ts">
+      import { ref } from 'vue'
+      import ZTable from '@/components/z/table'
+      import { NSpace, NButton, NPopconfirm } from 'naive-ui'
+
+      const emit = defineEmits<{
+        (e: 'row-click', row: Record<string, any>): void
+        (e: 'edit', row: Record<string, any>): void
+        (e: 'delete', row: Record<string, any>): void
+      }>()
+
+      interface Props {
+        k?: string
+        method?: 'get' | 'post'
+        requestBody?: Record<string, any>
+      }
+      const props = withDefaults(defineProps<Props>(), {
+        k: '',
+        method: 'get',
+        requestBody: () => ({}),
+      })
+
+      const tableRef = ref()
+
+      interface TableColumn {
+        key: string
+        title: string
+        width?: number
+        fixed?: 'left' | 'right'
+        render?: (row: any) => any
+      }
+
+      const tableColumns = ref<TableColumn[]>([
+        {% for field in steps.parse_prompt.output.parse_result.fields %}
+        {
+          key: '{{field.key}}',
+          title: '{{field.label}}',
+          width: {{field.props.width | default(150)}},
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+        {
+          title: '操作',
+          key: 'actions',
+          fixed: 'right',
+          width: 150,
+          render: (row: any) => {
+            return (
+              <NSpace>
+                <NButton type="primary" text onClick={() => handleEdit(row)}>
+                  编辑
+                </NButton>
+                <NPopconfirm onPositiveClick={() => handleDelete(row)}>
+                  {{
+                    default: () => '确认删除？',
+                    trigger: () => (
+                      <NButton type="error" text>
+                        删除
+                      </NButton>
+                    ),
+                  }}
+                </NPopconfirm>
+              </NSpace>
+            )
+          },
+        },
+      ])
+
+      const searchFormOptions = ref({
+        layout: 'grid',
+        cols: 4,
+        options: [
+          {% for field in steps.parse_prompt.output.parse_result.fields[:3] %}
+          {
+            type: '{{field | field_to_zform_type}}',
+            key: '{{field.key}}',
+            span: 1,
+            label: '{{field.label}}',
+            showFeedback: false,
+            itemStyle: {},
+            attribute: {
+              data: {
+                placeholder: '{{field.placeholder | default("请输入" + field.label)}}'
+              }
+            }
+          }{% if not loop.last %},{% endif %}
+          {% endfor %}
+        ],
+      })
+
+      const tableData = ref<any[]>([])
+
+      function handleEdit(row: any) {
+        emit('edit', row)
+      }
+
+      function handleDelete(row: any) {
+        emit('delete', row)
+      }
+
+      function handleRowClick(row: any) {
+        emit('row-click', row)
+      }
+
+      function handleSearch(params: any) {
+        console.log('搜索参数:', params)
+        tableRef.value?.requestTableData(params)
+      }
+
+      function handleReset(params: any) {
+        console.log('重置参数:', params)
+        tableRef.value?.requestTableData(params)
+      }
+
+      function refresh() {
+        tableRef.value?.requestTableData()
+      }
+
+      function getChecked() {
+        return tableRef.value?.getChecked()
+      }
+
+      defineExpose({
+        refresh,
+        getChecked,
+        tableRef,
+      })
+      </script>
+
+      <template>
+        <ZTable
+          ref="tableRef"
+          :k="props.k"
+          :method="props.method"
+          :request-body="props.requestBody"
+          :table-columns="tableColumns"
+          :options="searchFormOptions"
+          {% if steps.parse_prompt.output.parse_result.config.pagination %}
+          :paging="true"
+          :page-size="10"
+          :show-size-picker="true"
+          :show-quick-jumper="true"
+          {% endif %}
+          @search="handleSearch"
+          @reset="handleReset"
+        >
+          {% if steps.parse_prompt.output.parse_result.buttons | length > 0 %}
+          <template #left>
+            <NSpace>
+              {% for btn in steps.parse_prompt.output.parse_result.buttons %}
+              <NButton{{btn.type | if(' type="' + btn.type + '"', '')}}{{btn.onClick | if(' @click="' + btn.onClick + '"', '')}}>
+                {{btn.text}}
+              </NButton>
+              {% endfor %}
+            </NSpace>
+          </template>
+          {% endif %}
+        </ZTable>
+      </template>
+
+      <style lang="scss" scoped>
+      </style>
+      ```
+
+      ### 表格组件 (使用 NDataTable)
+      ```vue
+      <script setup lang="ts">
+      import { ref } from 'vue'
+      import { NDataTable, NSpace, NButton, NPopconfirm, NPagination } from 'naive-ui'
+
+      const emit = defineEmits<{
+        (e: 'row-click', row: Record<string, any>): void
+        (e: 'edit', row: Record<string, any>): void
+        (e: 'delete', row: Record<string, any>): void
+      }>()
+
+      interface Props {
+        data?: any[]
+        loading?: boolean
+      }
+      const props = withDefaults(defineProps<Props>(), {
+        data: () => [],
+        loading: false,
+      })
+
+      const tableColumns = ref([
+        {% for field in steps.parse_prompt.output.parse_result.fields %}
+        {
+          key: '{{field.key}}',
+          title: '{{field.label}}',
+          width: {{field.props.width | default(150)}},
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+        {
+          title: '操作',
+          key: 'actions',
+          fixed: 'right',
+          width: 150,
+          render: (row: any) => {
+            return (
+              <NSpace>
+                <NButton type="primary" text onClick={() => handleEdit(row)}>
+                  编辑
+                </NButton>
+                <NPopconfirm onPositiveClick={() => handleDelete(row)}>
+                  {{
+                    default: () => '确认删除？',
+                    trigger: () => (
+                      <NButton type="error" text>
+                        删除
+                      </NButton>
+                    ),
+                  }}
+                </NPopconfirm>
+              </NSpace>
+            )
+          },
+        },
+      ])
+
+      const pagination = ref({
+        page: 1,
+        pageSize: 10,
+        itemCount: 0,
+        showSizePicker: true,
+        pageSizes: [10, 20, 50, 100],
+        showQuickJumper: true,
+      })
+
+      function handleEdit(row: any) {
+        emit('edit', row)
+      }
+
+      function handleDelete(row: any) {
+        emit('delete', row)
+      }
+
+      function handleRowClick(row: any) {
+        emit('row-click', row)
+      }
+      </script>
+
+      <template>
+        <div class="data-table-wrapper">
+          <NDataTable
+            :columns="tableColumns"
+            :data="props.data"
+            :loading="props.loading"
+            :pagination="pagination"
+            striped
+            @update:page="pagination.page = $event"
+            @update:page-size="pagination.pageSize = $event"
+          />
+        </div>
+      </template>
+
+      <style lang="scss" scoped>
+      .data-table-wrapper {
+        padding: 20px;
+      }
+      </style>
+      ```
+
+      ## 辅助函数
+
+      ### 字段类型转 TypeScript 类型
+      - input, textarea, select, radio → string
+      - inputNumber → number
+      - checkbox, switch → boolean
+      - datePicker → number | string
+      - 其他 → any
+
+      ### 字段类型转组件名
+      - input → NInput
+      - inputNumber → NInputNumber
+      - textarea → NInput (with type="textarea")
+      - select → NSelect
+      - radio → NRadioGroup + NRadio
+      - checkbox → NCheckbox
+      - switch → NSwitch
+      - datePicker → NDatePicker
+
+      ### 字段类型转 ZForm 类型
+      - input → Input
+      - inputNumber → InputNumber
+      - textarea → Textarea
+      - select → Select
+      - radio → Radio
+      - checkbox → Checkbox
+      - switch → Switch
+      - datePicker → DatePicker
+
+      ## 输出要求
+      输出完整的 Vue 组件代码，使用代码块包裹。
+      确保：
+      1. 代码语法正确
+      2. 类型定义完整
+      3. Props 和 Emits 使用类型定义
+      4. 使用 defineExpose 暴露公共方法
+      5. 代码格式规范，缩进正确
+    outputs:
+      component_code: "{{response}}"
+
+  # ========== 步骤 5: 写入文件 ==========
+  - id: write_file
+    name: "写入组件文件"
+    description: 将生成的组件代码写入文件
+    prompt: |
+      ## 任务
+      将生成的组件代码写入文件。
+
+      ## 输出目录
+      {{inputs.output_dir}}
+
+      ## 组件名称
+      {{steps.parse_prompt.output.parse_result.componentName}}
+
+      ## 组件代码
+      {{steps.generate_code.output.component_code}}
+
+      ## 文件路径
+      {{inputs.output_dir}}/{{steps.parse_prompt.output.parse_result.componentName}}.vue
+
+      请将上述代码写入到文件中。确保：
+      1. 目录存在，不存在则创建
+      2. 文件以 .vue 结尾
+      3. 代码格式正确
+    action: write
+    outputs:
+      file_path: "{{inputs.output_dir}}/{{steps.parse_prompt.output.parse_result.componentName}}.vue"
+
+  # ========== 步骤 6: 生成使用文档 ==========
+  - id: generate_docs
+    name: "生成使用文档"
+    description: 为生成的组件创建使用文档
+    prompt: |
+      ## 任务
+      为生成的组件创建使用文档（Markdown 格式）。
+
+      ## 组件配置
+      {{steps.parse_prompt.output.parse_result}}
+
+      {% if steps.select_table_type %}
+      ## 表格类型
+      {{steps.select_table_type.output.table_type}}
+      {% endif %}
+
+      ## 组件代码
+      {{steps.generate_code.output.component_code}}
+
+      ## 文档模板
+      ```markdown
+      # {{steps.parse_prompt.output.parse_result.componentName}}
+
+      {{steps.parse_prompt.output.parse_result.description}}
+
+      ## 基本用法
+
+      \`\`\`vue
+      <template>
+        <{{steps.parse_prompt.output.parse_result.componentName}}
+          @ok="handleOk"
+          @cancel="handleCancel"
+        />
+      </template>
+
+      <script setup lang="ts">
+      import {{steps.parse_prompt.output.parse_result.componentName}} from '@/{{inputs.output_dir.replace('./src/', '')}}/{{steps.parse_prompt.output.parse_result.componentName}}'
+
+      function handleOk(data: any) {
+        console.log('确定', data)
+      }
+
+      function handleCancel() {
+        console.log('取消')
+      }
+      </script>
+      \`\`\`
+
+      ## Props
+
+      | 参数 | 说明 | 类型 | 默认值 |
+      |------|------|------|--------|
+      {% if steps.parse_prompt.output.parse_result.componentType == 'modal' %}
+      | title | 弹窗标题 | string | '{{steps.parse_prompt.output.parse_result.title}}' |
+      | size | 弹窗尺寸 | 'mini' \| 'small' \| 'medium' \| 'large' | 'medium' |
+      | okText | 确定按钮文本 | string | '确定' |
+      | cancelText | 取消按钮文本 | string | '取消' |
+      | okLoading | 确定按钮加载状态 | boolean | false |
+      {% endif %}
+
+      ## Events
+
+      | 事件名 | 说明 | 参数 |
+      |--------|------|------|
+      {% if steps.parse_prompt.output.parse_result.componentType == 'modal' %}
+      | ok | 点击确定按钮时触发 | (data: FormData) => void |
+      | cancel | 点击取消按钮时触发 | () => void |
+      | close | 弹窗关闭时触发 | () => void |
+      {% elif steps.parse_prompt.output.parse_result.componentType == 'table' %}
+      | row-click | 点击行时触发 | (row: any) => void |
+      | edit | 点击编辑按钮时触发 | (row: any) => void |
+      | delete | 点击删除按钮时触发 | (row: any) => void |
+      {% endif %}
+
+      ## Methods
+
+      {% if steps.parse_prompt.output.parse_result.componentType == 'modal' %}
+      | 方法名 | 说明 | 参数 |
+      |--------|------|------|
+      | show | 显示弹窗 | - |
+      | close | 关闭弹窗 | - |
+      | resetForm | 重置表单 | - |
+      | setFormData | 设置表单数据 | (data: Partial\<FormData\>) => void |
+      {% elif steps.parse_prompt.output.parse_result.componentType == 'table' %}
+      | 方法名 | 说明 | 参数 |
+      |--------|------|------|
+      | refresh | 刷新表格数据 | - |
+      | getChecked | 获取选中行 | - |
+      {% endif %}
+
+      ## 字段说明
+
+      | 字段名 | 标签 | 类型 | 必填 | 说明 |
+      |--------|------|------|------|------|
+      {% for field in steps.parse_prompt.output.parse_result.fields %}
+      | {{field.key}} | {{field.label}} | {{field.type}} | {{field.required | bool_to_chinese}} | - |
+      {% endfor %}
+
+      ## 依赖组件
+
+      {% if steps.parse_prompt.output.parse_result.componentType == 'modal' %}
+      - ZModal (项目封装)
+      - NForm, NFormItem (NaiveUI)
+      {% for field in steps.parse_prompt.output.parse_result.fields %}
+      {% if field.type in ['input', 'textarea'] %}- NInput (NaiveUI)
+      {% elif field.type == 'inputNumber' %}- NInputNumber (NaiveUI)
+      {% elif field.type == 'select' %}- NSelect (NaiveUI)
+      {% elif field.type == 'radio' %}- NRadioGroup, NRadio (NaiveUI)
+      {% elif field.type == 'checkbox' %}- NCheckbox (NaiveUI)
+      {% elif field.type == 'switch' %}- NSwitch (NaiveUI)
+      {% elif field.type == 'datePicker' %}- NDatePicker (NaiveUI)
+      {% endif %}
+      {% endfor %}
+      {% elif steps.parse_prompt.output.parse_result.componentType == 'table' %}
+      {% if steps.select_table_type and steps.select_table_type.output.table_type == 'ZTable' %}- ZTable (项目封装)
+      {% else %}- NDataTable (NaiveUI)
+      {% endif %}
+      - NSpace, NButton, NPopconfirm (NaiveUI)
+      {% endif %}
+
+      ---
+
+      *此文档由 Claude Code Workflows 自动生成*
+      ```
+
+      请输出完整的 Markdown 文档内容。
+    outputs:
+      documentation: "{{response}}"
+
+  # ========== 步骤 7: 输出总结 ==========
+  - id: summary
+    name: "生成完成总结"
+    description: 输出组件生成的总结信息
+    prompt: |
+      ## 组件生成完成 ✅
+
+      ### 组件信息
+      - **组件名称**: {{steps.parse_prompt.output.parse_result.componentName}}
+      - **组件类型**: {{steps.parse_prompt.output.parse_result.componentType}}
+      - **功能描述**: {{steps.parse_prompt.output.parse_result.description}}
+
+      ### 文件位置
+      - **组件文件**: `{{steps.write_file.output.file_path}}`
+      - **输出目录**: {{inputs.output_dir}}
+
+      ### 组件配置
+      {% if steps.parse_prompt.output.parse_result.componentType == 'modal' %}
+      - **弹窗尺寸**: {{steps.parse_prompt.output.parse_result.config.size}}
+      - **字段数量**: {{steps.parse_prompt.output.parse_result.fields | length}}
+      - **按钮数量**: {{steps.parse_prompt.output.parse_result.buttons | length}}
+      {% elif steps.parse_prompt.output.parse_result.componentType == 'table' %}
+      {% if steps.select_table_type %}
+      - **表格类型**: {{steps.select_table_type.output.table_type}}
+      {% endif %}
+      - **列数量**: {{steps.parse_prompt.output.parse_result.fields | length}}
+      - **分页**: {{steps.parse_prompt.output.parse_result.config.pagination | bool_to_chinese}}
+      - **可排序**: {{steps.parse_prompt.output.parse_result.config.sortable | bool_to_chinese}}
+      - **可选择**: {{steps.parse_prompt.output.parse_result.config.selectable | bool_to_chinese}}
+      {% endif %}
+
+      ### 字段列表
+      | 字段名 | 标签 | 类型 | 必填 |
+      |--------|------|------|------|
+      {% for field in steps.parse_prompt.output.parse_result.fields %}
+      | {{field.key}} | {{field.label}} | {{field.type}} | {{field.required | bool_to_chinese}} |
+      {% endfor %}
+
+      ### 使用方式
+      \`\`\`vue
+      <template>
+        <{{steps.parse_prompt.output.parse_result.componentName}} @ok="handleOk" />
+      </template>
+
+      <script setup lang="ts">
+      import {{steps.parse_prompt.output.parse_result.componentName}} from '@/{{inputs.output_dir.replace('./src/', '')}}/{{steps.parse_prompt.output.parse_result.componentName}}'
+
+      function handleOk(data: any) {
+        console.log(data)
+      }
+      </script>
+      \`\`\`
+
+      ### 依赖组件
+      {{steps.determine_imports.output.imports | join('\n')}}
+
+      ---
+
+      组件已成功生成！请查看文件：
+      \`\`\`bash
+      cat {{steps.write_file.output.file_path}}
+      \`\`\`
+    outputs: {}
+
+# ========== 辅助过滤器 ==========
+filters:
+  bool_to_chinese:
+    description: "将布尔值转换为中文"
+    code: |
+      fn bool_to_chinese(value: bool) -> str {
+        if value { return "是" } else { return "否" }
+      }
+
+  field_to_ts_type:
+    description: "将字段类型转换为 TypeScript 类型"
+    code: |
+      fn field_to_ts_type(field: Field) -> str {
+        match field.type {
+          "input" | "textarea" | "select" | "radio" => "string",
+          "inputNumber" => "number",
+          "checkbox" | "switch" => "boolean",
+          "datePicker" => "number | string",
+          _ => "any"
+        }
+      }
+
+  field_to_component:
+    description: "将字段类型转换为 NaiveUI 组件名"
+    code: |
+      fn field_to_component(field: Field) -> str {
+        match field.type {
+          "input" => "NInput",
+          "inputNumber" => "NInputNumber",
+          "textarea" => "NInput",
+          "select" => "NSelect",
+          "radio" => "NRadioGroup",
+          "checkbox" => "NCheckbox",
+          "switch" => "NSwitch",
+          "datePicker" => "NDatePicker",
+          _ => "NInput"
+        }
+      }
+
+  field_to_zform_type:
+    description: "将字段类型转换为 ZForm 类型"
+    code: |
+      fn field_to_zform_type(field: Field) -> str {
+        match field.type {
+          "input" => "Input",
+          "inputNumber" => "InputNumber",
+          "textarea" => "Textarea",
+          "select" => "Select",
+          "radio" => "Radio",
+          "checkbox" => "Checkbox",
+          "switch" => "Switch",
+          "datePicker" => "DatePicker",
+          _ => "Input"
+        }
+      }
+
+  props_to_attrs:
+    description: "将 props 对象转换为 Vue 属性格式"
+    code: |
+      fn props_to_attrs(props: Map<string, Any>) -> str {
+        props.map(|(k, v)| format!(":{}=\"{}\"", k, v)).join(" ")
+      }
