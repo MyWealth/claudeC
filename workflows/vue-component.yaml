@@ -1,4 +1,4 @@
-name: "generate-vue-component"
+name: "vue-component"
 description: |
   根据用户提示词自动生成 Vue 组件代码。
 
