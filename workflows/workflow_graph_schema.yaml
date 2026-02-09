@@ -1,0 +1,290 @@
+# workflow_graph_schema.yaml
+version: "1.0"
+metadata:
+  name: "ClaudeCode Interactive Graph Workflow"
+  description: "基于图算法的分步骤引导式工作流，支持Human-in-the-loop确认机制"
+  graph_theory:
+    type: "DAG"  # 有向无环图，确保工作流可终止
+    traversal: "BFS"  # 广度优先，支持并行子任务
+    checkpoint_strategy: "node_level"  # 每个节点前保存状态
+
+# 状态机定义（全局状态管理）
+state_machine:
+  context:
+    user_input: null      # 原始输入（文本/图片URL）
+    current_node: "start" # 当前执行节点ID
+    history: []           # 执行路径记录
+    artifacts: {}         # 中间产物存储
+  checkpoints:
+    auto_save: true
+    rollback_capable: true  # 支持回退到任意节点
+
+# 节点类型定义（图节点分类）
+node_types:
+  INPUT: { icon: "📥", description: "接收用户输入" }
+  ANALYSIS: { icon: "🔍", description: "AI分析处理" }
+  DECISION: { icon: "⚡", description: "条件判断分支" }
+  CONFIRM: { icon: "⏸️", description: "等待用户确认" }
+  SUBGRAPH: { icon: "📦", description: "嵌套子工作流" }
+  OUTPUT: { icon: "✅", description: "最终输出" }
+
+# 工作流图定义（核心）
+workflow_graph:
+  nodes:
+    # 根节点：输入识别
+    - id: "start"
+      type: "INPUT"
+      name: "multimodal_input"
+      config:
+        accept_types: ["text", "image"]
+        prompt: "请提供您的需求描述或参考图片，我将为您拆解任务..."
+      next: ["parse_input"]
+
+    # 节点1：智能解析（自动执行）
+    - id: "parse_input"
+      type: "ANALYSIS"
+      name: "intent_parser"
+      skill: "claude-code-intent-parser"
+      config:
+        system_prompt: |
+          分析用户输入，识别：
+          1. 任务类型（coding/design/writing/analysis）
+          2. 复杂度评分（1-10）
+          3. 可拆解子任务列表
+        output_schema:
+          task_type: "string"
+          complexity: "integer"
+          subtasks: "array"
+      next: ["complexity_check"]
+
+    # 节点2：复杂度决策（自动路由）
+    - id: "complexity_check"
+      type: "DECISION"
+      name: "routing_decision"
+      conditions:
+        - if: "complexity <= 3"
+          then: "simple_task_flow"
+        - if: "complexity > 3 && complexity <= 7"
+          then: "moderate_decomposition"
+        - else: "complex_decomposition"
+      edges:
+        simple_task_flow: "direct_execution"
+        moderate_decomposition: "step_planning"
+        complex_decomposition: "recursive_planning"
+
+    # 分支A：简单任务直接执行
+    - id: "direct_execution"
+      type: "CONFIRM"
+      name: "confirm_simple"
+      config:
+        message_template: |
+          检测到简单任务：{task_type}
+          执行计划：{plan}
+          是否立即执行？
+        options: ["execute", "modify", "cancel"]
+      next:
+        execute: ["executor"]
+        modify: ["parse_input"]
+        cancel: ["abort"]
+
+    # 分支B：中等复杂度 - 步骤规划
+    - id: "step_planning"
+      type: "ANALYSIS"
+      name: "step_breakdown"
+      skill: "claude-code-planner"
+      config:
+        strategy: "sequential"
+        max_steps: 5
+        require_confirmation_each: true
+      next: ["interactive_executor"]
+
+    # 分支C：复杂任务 - 递归子图
+    - id: "recursive_planning"
+      type: "SUBGRAPH"
+      name: "master_planner"
+      subgraph_ref: "hierarchical_decomposition"
+      config:
+        depth_limit: 3  # 防止无限递归
+        parallel_branches: true  # 独立子任务并行
+      next: ["merge_results"]
+
+    # 核心节点：交互式执行引擎（带确认）
+    - id: "interactive_executor"
+      type: "CONFIRM"
+      name: "step_by_step_controller"
+      config:
+        mode: "iterative_confirmation"
+        step_template:
+          pre_exec: |
+            ## 步骤 {step_number}/{total_steps}
+            **目标**: {step_goal}
+            **输入**: {dependencies}
+            **预计产出**: {output_artifact}
+            
+            准备执行此步骤？
+          post_exec: |
+            步骤 {step_number} 完成，产出：
+            ```{artifact_preview}```
+            是否继续下一步？
+        control_options:
+          - "continue"      # 继续下一步
+          - "retry"         # 重做当前步
+          - "modify"        # 修改当前步参数
+          - "branch"        # 从这里分叉新路径
+          - "rollback"      # 回退到某节点
+      next:
+        continue: ["dynamic_router"]
+        retry: ["self"]  # 自循环
+        modify: ["step_planning"]
+        branch: ["subgraph_spawn"]
+        rollback: ["state_restorer"]
+
+    # 动态路由：根据执行结果决定下一步
+    - id: "dynamic_router"
+      type: "DECISION"
+      name: "execution_router"
+      conditions:
+        - if: "remaining_steps > 0"
+          then: "interactive_executor"
+        - else: "validation"
+
+    # 子图生成器（处理分叉需求）
+    - id: "subgraph_spawn"
+      type: "SUBGRAPH"
+      name: "adaptive_branch"
+      dynamic: true  # 运行时生成子图
+      config:
+        inherit_context: true
+        isolation_level: "context_copy"
+      next: ["merge_results"]
+
+    # 结果合并（针对并行子任务）
+    - id: "merge_results"
+      type: "ANALYSIS"
+      name: "synthesizer"
+      skill: "claude-code-synthesis"
+      config:
+        merge_strategy: "hierarchical"
+        conflict_resolution: "interactive"  # 冲突时询问用户
+      next: ["validation"]
+
+    # 质量验证节点（人机协作）
+    - id: "validation"
+      type: "CONFIRM"
+      name: "quality_gate"
+      config:
+        message_template: |
+          ## 任务执行完成
+          **成果摘要**: {summary}
+          **耗时**: {duration}
+          
+          请选择：
+          - ✅ 接受并结束
+          - 🔧 需要修改（指定范围）
+          - 🔄 完全重做
+          - ➕ 增加新步骤
+      next:
+        accept: ["finalize"]
+        modify: ["partial_retry"]
+        redo: ["parse_input"]
+        extend: ["step_planning"]
+
+    # 部分重试机制（精准修复）
+    - id: "partial_retry"
+      type: "ANALYSIS"
+      name: "diff_analyzer"
+      config:
+        mode: "selective_rollback"
+        preserve_valid_work: true
+      next: ["interactive_executor"]
+
+    # 终态节点
+    - id: "finalize"
+      type: "OUTPUT"
+      name: "delivery"
+      config:
+        format: "markdown"
+        include_thought_chain: true
+        export_artifacts: true
+
+    - id: "abort"
+      type: "OUTPUT"
+      name: "termination"
+      config:
+        status: "cancelled"
+        cleanup_temp: true
+
+  # 边定义（显式控制流 + 条件边）
+  edges:
+    # 显式边（强连接）
+    explicit:
+      - from: "start"
+        to: "parse_input"
+        label: "自动解析"
+    
+    # 条件边（运行时决定）
+    conditional:
+      - from: "complexity_check"
+        to: "direct_execution"
+        condition: "complexity <= 3"
+        weight: 1
+      
+      - from: "complexity_check"
+        to: "step_planning"
+        condition: "complexity <= 7"
+        weight: 2
+    
+    # 反馈边（支持循环优化）
+    feedback:
+      - from: "validation"
+        to: "parse_input"
+        label: "全局重做"
+        max_iterations: 3  # 防止无限循环
+
+# 子工作流定义（递归结构示例）
+sub_workflows:
+  hierarchical_decomposition:
+    description: "复杂任务递归拆解为子任务图"
+    nodes:
+      - id: "decompose"
+        type: "ANALYSIS"
+        name: "task_splitter"
+        config:
+          strategy: "mcts"  # 蒙特卡洛树搜索寻找最优拆解
+          min_granularity: "atomic_task"
+        next: ["parallel_dispatch"]
+      
+      - id: "parallel_dispatch"
+        type: "SUBGRAPH"
+        name: "worker_pool"
+        replication_mode: "foreach_subtask"  # 为每个子任务复制子图
+        subgraph_ref: "atomic_execution"
+        config:
+          max_parallel: 3  # 并发控制
+        next: ["subtask_merge"]
+
+# 运行时配置（执行策略）
+runtime:
+  execution_engine:
+    type: "event_driven"
+    persistence: "memory+file"  # 支持断点续传
+    
+  human_in_the_loop:
+    default_action: "pause_await_input"
+    timeout: "infinite"  # 等待用户确认，无超时
+    ui_mode: "rich_interactive"  # 支持按钮/输入框/图片预览
+    
+  error_handling:
+    strategy: "node_isolation"
+    on_failure:
+      - action: "pause_and_ask"
+        message: "步骤 {node_id} 失败，是否重试/跳过/终止？"
+      - action: "auto_retry"
+        max_attempts: 2
+      - action: "escalate_to_parent"
+        if_subgraph: true
+        
+  observability:
+    graph_visualization: true  # 实时渲染当前执行路径图
+    state_inspection: true     # 允许查看中间状态
+    thought_chain_logging: true # 记录决策过程

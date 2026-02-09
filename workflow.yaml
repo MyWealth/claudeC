@@ -1,0 +1,73 @@
+# .claude/workflow.yaml
+workflow:
+  name: "Vue组件生成器"
+  version: "1.0"
+
+graph:
+  nodes:
+    start:
+      type: input
+      description: "接收需求"
+      prompt: "请描述你要生成的组件，或粘贴图片链接"
+      next: parser
+      
+    parser:
+      type: analyzer
+      description: "解析意图"
+      next: router
+      
+    router:
+      type: decision
+      description: "根据复杂度路由"
+      condition: "context.complexity"
+      branches:
+        - if: "<= 3"
+          next: simple_gen
+        - if: "> 3"
+          next: complex_gen
+      
+    simple_gen:
+      type: codegen
+      description: "生成单文件组件"
+      config:
+        template: "functional-component"
+      next: review
+      
+    complex_gen:
+      type: codegen
+      description: "生成多文件架构"
+      config:
+        files: ["index.tsx", "types.ts", "hooks.ts"]
+      next: review
+      
+    review:
+      type: human-loop
+      description: "人工确认"
+      actions:
+        accept: finalize
+        retry: self  # 特殊值，表示重新执行当前节点
+        rollback: parser
+      next:
+        accept: finalize
+        
+    finalize:
+      type: output
+      description: "写入文件系统"
+      config:
+        atomic: true
+
+edges:
+  - from: start
+    to: parser
+  - from: parser
+    to: router
+  - from: router
+    to: simple_gen
+    condition: "low"
+  - from: router
+    to: complex_gen  
+    condition: "high"
+  - from: [simple_gen, complex_gen]
+    to: review
+  - from: review
+    to: finalize

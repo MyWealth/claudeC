@@ -7,8 +7,6 @@
 
 ```vue
 <script setup lang="ts">
-import { ref } from 'vue'
-import { NDataTable, NSpace, NButton, NPopconfirm, NPagination } from 'naive-ui'
 
 const emit = defineEmits<{
   (e: 'row-click', row: Record<string, any>): void

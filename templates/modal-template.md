@@ -7,9 +7,6 @@
 
 ```vue
 <script setup lang="ts">
-import { ref } from 'vue'
-import ZModal from '@/components/z/modal'
-import { NForm, NFormItem, NSpace, NButton } from 'naive-ui'
 
 // Emits
 const emit = defineEmits<{

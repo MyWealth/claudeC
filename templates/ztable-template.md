@@ -7,10 +7,6 @@
 
 ```vue
 <script setup lang="ts">
-import { ref } from 'vue'
-import ZTable from '@/components/z/table'
-import { NSpace, NButton, NPopconfirm } from 'naive-ui'
-
 const emit = defineEmits<{
   (e: 'row-click', row: Record<string, any>): void
   (e: 'edit', row: Record<string, any>): void
@@ -30,16 +26,9 @@ const props = withDefaults(defineProps<Props>(), {
 
 const tableRef = ref()
 
-interface TableColumn {
-  key: string
-  title: string
-  width?: number
-  fixed?: 'left' | 'right'
-  render?: (row: any) => any
-}
 
 // 表格列配置 - 根据字段动态生成
-const tableColumns = ref<TableColumn[]>([
+const {tableColumns} = useTable([
   // TABLE_COLUMNS: 根据字段列表生成列
   {
     key: '字段key',
