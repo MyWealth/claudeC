@@ -1,0 +1,169 @@
+id: design-to-code
+name: 🎨 设计稿转 Vue3 组件
+description: 基于现有项目，生成 Vue3 + Naive UI + SCSS 组件代码
+
+initial_context:
+  framework: Vue 3
+  ui_library: Naive UI
+  styling: SCSS
+
+graph:
+  start_node: analyze_design
+
+  nodes:
+    # ========== 第一阶段：并行分析 ==========
+    - id: analyze_design
+      type: action
+      name: 设计稿分析
+      description: 提取设计要素，识别 Naive UI 可用组件
+      prompt: |
+        分析上传的设计稿，提取关键信息：
+
+        1. **页面类型**：表单 / 列表 / 详情 / 弹窗 / 混合
+        2. **Naive UI 组件映射**：
+           - 按钮 → n-button
+           - 输入框 → n-input / n-input-number
+           - 选择器 → n-select / n-cascader
+           - 日期 → n-date-picker
+           - 表格 → n-data-table
+           - 卡片 → n-card
+           - 标签页 → n-tabs
+           - 弹窗 → n-modal / n-drawer
+           - 提示 → n-alert / n-message
+           - 加载 → n-spin / n-skeleton
+
+        3. **布局结构**：Grid 栅格 / Flex 布局 / 侧边栏布局
+        4. **自定义组件**：哪些需要手写（如业务卡片、图表等）
+
+        输出分析结果到 context.analysis
+      output_key: analysis
+      confirm_before: true
+      confirm_message: '分析完成：检测到 {{analysis.naive_components.length}} 个 Naive UI 组件可用，{{analysis.custom_components.length}} 个需自定义。确认继续？'
+      next: [gen_structure, gen_styles]
+
+    - id: gen_structure
+      type: action
+      name: 生成组件结构
+      description: 并行：生成 Vue 模板和逻辑
+      dependencies: [analyze_design]
+      prompt: |
+        基于分析结果，生成 Vue 3 组件代码（script + template）。
+
+        ## 要求
+        - 使用 `<script setup lang="ts">`
+        - **无需导入 Naive UI 组件**（假设全局注册）
+        - 使用 Naive UI 组件标签：n-button, n-card, n-form 等
+        - Props 和 Emits 定义完整类型
+        - 复杂逻辑抽离为 composable 函数
+
+        ## 输出格式
+        生成 `ComponentName.vue` 的完整代码，包括：
+        1. template（使用 Naive UI 组件拼装）
+        2. script（响应式数据、方法、计算属性）
+        3. 简要说明关键逻辑
+
+        输出到 context.vue_code
+      output_key: vue_code
+      next: merge_code
+
+    - id: gen_styles
+      type: action
+      name: 生成 SCSS 样式
+      description: 并行：生成样式代码
+      dependencies: [analyze_design]
+      prompt: |
+        生成组件级 SCSS 代码。
+
+        ## 规范
+        - 使用 `<style scoped lang="scss">`
+        - 引用现有变量（如 `$primary-color`, `$border-radius` 等）
+        - 覆盖 Naive UI 样式使用 `:deep()` 选择器
+        - BEM 命名：`.component-name__element--modifier`
+
+        ## 输出内容
+        1. SCSS 代码块
+        2. 使用的变量清单（方便确认与现有项目一致）
+
+        输出到 context.scss_code
+      output_key: scss_code
+      next: merge_code
+
+    # ========== 第二阶段：合并输出 ==========
+    - id: merge_code
+      type: action
+      name: 合并代码
+      merge_strategy: all
+      description: 合并 Vue 和 SCSS 生成完整文件
+      prompt: |
+        合并生成最终代码文件：
+
+        ```vue
+        <!-- {{analysis.component_name || 'Component'}}.vue -->
+        <template>
+        {{vue_code.template}}
+        </template>
+
+        <script setup lang="ts">
+        {{vue_code.script}}
+        </script>
+
+        <style scoped lang="scss">
+        {{scss_code}}
+        </style>
+        ```
+
+        同时生成：
+        - 文件存放建议路径（如 `src/views/` 或 `src/components/`）
+        - 父组件调用示例
+      confirm_before: true
+      confirm_message: 组件代码已生成，是否直接写入文件或仅预览？
+      next: user_decision
+
+    - id: user_decision
+      type: decision
+      name: 操作选择
+      prompt: |
+        代码已准备就绪，请选择操作：
+      options:
+        - id: preview
+          label: 👀 仅预览（复制使用）
+          next: end
+
+        - id: write
+          label: 💾 写入文件（提供路径）
+          next: write_file
+
+        - id: modify
+          label: ✏️ 调整后再生成
+          next: analyze_design
+
+    - id: write_file
+      type: input
+      name: 确认文件路径
+      inputs:
+        - key: file_path
+          label: 文件路径（相对于项目根目录）
+          type: text
+          default: src/components/DesignComponent.vue
+      next: final_check
+
+    - id: final_check
+      type: action
+      name: 代码审查
+      prompt: |
+        最终检查清单：
+
+        ✅ 使用 Naive UI 组件无需 import（全局可用）
+        ✅ TypeScript 类型定义完整
+        ✅ SCSS 变量引用正确
+        ✅ 响应式布局适配
+        ✅ 无 console.log 残留
+
+        文件将写入：{{file_path}}
+      confirm_before: true
+      next: end
+
+  edges:
+    - from: '*'
+      command: /back
+      action: rollback
